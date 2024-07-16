@@ -1,0 +1,90 @@
+// array dimension per PE
+param M: i16;
+
+// color for cmd fan
+const ctrl_color: color = @get_color(0);
+
+// colors for communicating data between workers
+const data_color_1: color = @get_color(2);
+const data_color_2: color = @get_color(3);
+
+// This example only uses 6 PEs
+const memcpy = @import_module("<memcpy/get_params>", .{
+  .width = 2,
+  .height = 3
+});
+
+layout {
+  // PE coordinates are (column, row)
+  @set_rectangle(2, 3);
+
+  //    LAYOUT              //    CMD FAN             // DATA COLOR 1           // DATA COLOR 2        
+  // *--------*--------*    // *--------*--------*    // *--------*--------*    // *--------*--------*
+  // | (0,0)  | (1,0)  |    // |        |        |    // |        |        |    // |        |        |
+  // |  WRKR  |  WRKR  |    // |   ^    |   ^    |    // |   >- - | - >    |    // |   <- - | - <    |
+  // |        |        |    // |   |    |   |    |    // |        |        |    // |        |        |
+  // *--------*--------*    // *--------*--------*    // *--------*--------*    // *--------*--------*
+  // | (0,1)  | (1,1)  |    // |   |    |   |    |    // |        |        |    // |        |        |
+  // |  CTRL  |  CTRL  |    // |   >- - | - >    |    // |        |        |    // |        |        |
+  // |        | RESEND |    // |   |    |   |    |    // |        |        |    // |        |        |
+  // *--------*--------*    // *--------*--------*    // *--------*--------*    // *--------*--------*
+  // | (0,2)  | (1,2)  |    // |   |    |   |    |    // |        |        |    // |        |        |
+  // |  WRKR  |  WRKR  |    // |   v    |   v    |    // |   >- - | - >    |    // |   <- - | - <    |
+  // |        |        |    // |        |        |    // |        |        |    // |        |        |
+  // *--------*--------*    // *--------*--------*    // *--------*--------*    // *--------*--------*
+
+  // Ctrl PE (0, 1)
+  @set_tile_code(0, 1, "ctrl.csl", .{ .memcpy_params = memcpy.get_params(0) });
+  @set_color_config(0, 1, ctrl_color, .{.routes = .{ .rx = .{RAMP}, .tx = .{EAST, NORTH, SOUTH} }});
+
+  // Ctrl resend PE (1, 1)
+  @set_tile_code(1, 1, "ctrl_resend.csl", .{ .memcpy_params = memcpy.get_params(1) });
+  @set_color_config(1, 1, ctrl_color, .{.routes = .{ .rx = .{WEST}, .tx = .{NORTH, SOUTH} }});
+
+  // WORKER PEs
+  /////////////
+  const west_checkerboard = .{ .data_send_color = data_color_1, .data_recv_color = data_color_2 };
+  const east_checkerboard = .{ .data_send_color = data_color_2, .data_recv_color = data_color_1 };
+
+  const west_checkerboard_params = @concat_structs(
+    .{ .memcpy_params = memcpy.get_params(0), .M = M },
+    west_checkerboard
+  ); 
+
+  const east_checkerboard_params = @concat_structs(
+    .{ .memcpy_params = memcpy.get_params(1), .M = M },
+    east_checkerboard
+  ); 
+
+  // Worker PE (0, 0) northwest corner
+  @set_tile_code(0, 0, "worker.csl", west_checkerboard_params);
+  @set_color_config(0, 0, ctrl_color,   .{.routes = .{ .rx = .{SOUTH}, .tx = .{RAMP} }});
+  @set_color_config(0, 0, data_color_1, .{.routes = .{ .rx = .{RAMP},  .tx = .{EAST} }});
+  @set_color_config(0, 0, data_color_2, .{.routes = .{ .rx = .{EAST},  .tx = .{RAMP} }});
+
+  // Worker PE (1, 0) northeast corner
+  @set_tile_code(1, 0, "worker.csl", east_checkerboard_params);
+  @set_color_config(1, 0, ctrl_color,   .{.routes = .{ .rx = .{SOUTH}, .tx = .{RAMP} }});
+  @set_color_config(1, 0, data_color_1, .{.routes = .{ .rx = .{WEST},  .tx = .{RAMP} }});
+  @set_color_config(1, 0, data_color_2, .{.routes = .{ .rx = .{RAMP},  .tx = .{WEST} }});
+
+  // Worker PE (0, 2) southwest corner
+  @set_tile_code(0, 2, "worker.csl", west_checkerboard_params);
+  @set_color_config(0, 2, ctrl_color,   .{.routes = .{ .rx = .{NORTH}, .tx = .{RAMP} }});
+  @set_color_config(0, 2, data_color_1, .{.routes = .{ .rx = .{RAMP},  .tx = .{EAST} }});
+  @set_color_config(0, 2, data_color_2, .{.routes = .{ .rx = .{EAST},  .tx = .{RAMP} }});
+
+  // Worker PE (1, 2) southeast corner
+  @set_tile_code(1, 2, "worker.csl", east_checkerboard_params);
+  @set_color_config(1, 2, ctrl_color,   .{.routes = .{ .rx = .{NORTH}, .tx = .{RAMP} }});
+  @set_color_config(1, 2, data_color_1, .{.routes = .{ .rx = .{WEST},  .tx = .{RAMP} }});
+  @set_color_config(1, 2, data_color_2, .{.routes = .{ .rx = .{RAMP},  .tx = .{WEST} }});
+
+  // SYMBOL EXPORTS
+  /////////////////
+  // export symbol for array x. Host will copy to/ from x on worker PEs
+  @export_name("z", [*]f32, true);
+
+  // export symbol for launch_ctrl fn. This will launch cmd sequence on ctrl PE
+  @export_name("launch_ctrl", fn()void);
+}

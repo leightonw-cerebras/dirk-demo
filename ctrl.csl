@@ -1,0 +1,56 @@
+param memcpy_params: comptime_struct;
+
+// color for cmd fan
+const ctrl_color: color = @get_color(0);
+
+// local task ID
+const EXIT:   local_task_id = @get_local_task_id(9);
+
+// entrypoints
+const entrypt_45 = 45 << 16;
+const entrypt_46 = 46 << 16;
+const entrypt_47 = 47 << 16;
+const entrypt_48 = 48 << 16;
+const entrypt_60 = 60 << 16;
+
+// memcpy module provides infrastructure for copying data
+// and launching functions from the host
+const sys_mod = @import_module("<memcpy/memcpy>", memcpy_params);
+
+// array used to store ctrl wlts
+// we will hardcode 4 cmds
+var ctrl_wlt = @zeros([10]u32);
+const ctrl_wlt_dsd = @get_dsd(mem1d_dsd, .{ .tensor_access = |i|{5} -> ctrl_wlt[i] });
+
+// fab dsd for sending ctrl wlts on cmd fan
+const fab_trans_cmd_wdsd = @get_dsd(fabout_dsd, .{
+  .extent = 1, .fabric_color = ctrl_color, .control = true,
+  .output_queue = @get_output_queue(2)
+});
+
+// Send out ctrl wlt
+fn launch_ctrl() void {
+
+  // Just a hardcoded sequence of commands
+  // No arguments at the moment
+  ctrl_wlt[0] = entrypt_46; // scale z array by 1.5
+  ctrl_wlt[1] = entrypt_45; // send from z array/ recv in recv array from east/ west neighbor
+  ctrl_wlt[2] = entrypt_47; // add contents in recv array to z array
+  ctrl_wlt[3] = entrypt_48; // add 1.0 to every element of z array
+  ctrl_wlt[4] = entrypt_60; // unblock memcpy to exit
+
+  @mov32(fab_trans_cmd_wdsd, ctrl_wlt_dsd, .{ .async = true, .activate = EXIT });
+}
+
+// unblock memcpy's cmd stream
+task memcpy_exit_task() void {
+  sys_mod.unblock_cmd_stream();
+}
+
+comptime {
+  // When EXIT is activated, memcpy_exit_task will execute
+  @bind_local_task(memcpy_exit_task, EXIT);
+
+  // allow launch_ctrl function to be called from host
+  @export_symbol(launch_ctrl);
+}

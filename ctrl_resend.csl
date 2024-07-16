@@ -1,0 +1,14 @@
+param memcpy_params: comptime_struct;
+
+// memcpy module provides infrastructure for copying data
+// and launching functions from the host
+const sys_mod = @import_module("<memcpy/memcpy>", memcpy_params);
+
+// Dummy launch
+fn launch_ctrl() void {
+  sys_mod.unblock_cmd_stream();
+}
+
+comptime {
+  @export_symbol(launch_ctrl);
+}

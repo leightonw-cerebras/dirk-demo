@@ -1,0 +1,120 @@
+param memcpy_params: comptime_struct;
+
+// parameter defining array size at compile time
+param M: i16;
+
+// colors for communicating data between workers
+param data_send_color: color;
+param data_recv_color: color;
+
+// color for cmd fan
+const ctrl_color = @get_color(0);
+
+// Local task IDs
+const unblock_ctrl_color = @get_local_task_id(10); // activates task to unblock cmd fan
+
+// ENTRYPOINTS
+const entrypt_45_id = @get_control_task_id(45); // send to fabout
+const entrypt_46_id = @get_control_task_id(46); // recv from fabin
+const entrypt_47_id = @get_control_task_id(47); // add recv_arr to z
+const entrypt_48_id = @get_control_task_id(48); // add 1 to z
+const entrypt_60_id = @get_control_task_id(60); // unblock memcpy
+
+
+// memcpy module provides infrastructure for copying data
+// and launching functions from the host
+const sys_mod = @import_module("<memcpy/memcpy>", memcpy_params);
+
+
+// PE MEMORY AND DSDS
+/////////////////////
+var z_arr = @zeros([M]f32);
+var z_ptr: [*]f32 = &z_arr;
+const z_dsd = @get_dsd(mem1d_dsd, .{ .tensor_access = |i|{M} -> z_arr[i] });
+
+var recv_arr = @zeros([M]f32);
+const recv_dsd = @get_dsd(mem1d_dsd, .{ .tensor_access = |i|{M} -> recv_arr[i] });
+
+const send_fabout = @get_dsd(fabout_dsd, .{
+  .extent = M, .fabric_color = data_send_color,
+  .output_queue = @get_output_queue(2)
+});
+
+const recv_fabin = @get_dsd(fabin_dsd, .{
+  .extent = M, .fabric_color = data_recv_color,
+  .input_queue = @get_input_queue(3)
+});
+
+// Dummy host RPC launch
+////////////////////////
+fn launch_ctrl() void {
+}
+
+
+// Cmd Entrypoint Tasks
+///////////////////////
+
+// Task activated by entrypoint 45
+// This task sends and receives contents to/ from east/ west neighbor's array
+task entrypt_task_45() void {
+  @block(ctrl_color);
+  @fmovs(send_fabout, z_dsd, .{ .async = true });
+  @fmovs(recv_dsd, recv_fabin, .{ .async = true, .activate = unblock_ctrl_color });
+
+  // We could also modify priority of fmovs async
+  // low is default; default main thread priority is between
+  // medium and low microthreads
+  //  .priority = .{ .high = true }
+}
+
+// Task activated by entrypoint 46
+// This task multiplies each element of z array by 1.5
+task entrypt_task_46() void {
+  @block(ctrl_color);
+  @fmuls(z_dsd, z_dsd, 1.5);
+  @activate(unblock_ctrl_color);
+}
+
+// Task activated by entrypoint 47
+// This task adds contents of recv_arr to z array
+task entrypt_task_47() void {
+  @block(ctrl_color);
+  @fadds(z_dsd, z_dsd, recv_dsd);
+  @activate(unblock_ctrl_color);
+}
+
+// Task activated by entrypoint 48
+// This task adds 1.0 to each element of z array
+task entrypt_task_48() void {
+  @block(ctrl_color);
+  @fadds(z_dsd, z_dsd, 1.0);
+  @activate(unblock_ctrl_color);
+}
+
+// Task activated by entrypoint 60
+// This task will unblock memcpy's cmd stream
+task memcpy_exit_task() void {
+  sys_mod.unblock_cmd_stream();
+}
+
+task unblock_ctrl() void {
+  @unblock(ctrl_color);
+}
+
+
+// Task color binding and host exports
+//////////////////////////////////////
+comptime {
+  @bind_local_task(unblock_ctrl, unblock_ctrl_color);
+
+  @bind_control_task(entrypt_task_45,  entrypt_45_id);
+  @bind_control_task(entrypt_task_46,  entrypt_46_id);
+  @bind_control_task(entrypt_task_47,  entrypt_47_id);
+  @bind_control_task(entrypt_task_48,  entrypt_48_id);
+  @bind_control_task(memcpy_exit_task, entrypt_60_id);
+
+  @unblock(ctrl_color);
+
+  @export_symbol(z_ptr, "z");
+  @export_symbol(launch_ctrl);
+}
